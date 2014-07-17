@@ -1,11 +1,5 @@
 part of hammock_mapper;
 
-Field _findField(ClassMirror cm, Symbol fieldName) {
-  final d = cm.declarations[fieldName];
-  if (d == null) return null;
-  return d.metadata.map((m) => m.reflectee).firstWhere((m) => m is Field, orElse: () => null);
-}
-
 class _FieldInfo {
   ClassMirror cm;
   Symbol fieldName;
@@ -14,25 +8,69 @@ class _FieldInfo {
 
   _FieldInfo.getter(this.cm, this.accessor) {
     fieldName = this.accessor.simpleName;
-    field = _findField(cm, fieldName);
+    field = findField();
   }
 
   _FieldInfo.setter(this.cm, this.accessor) {
     var name = MirrorSystem.getName(accessor.simpleName);
     fieldName = new Symbol(name.substring(0, name.length - 1));
-    field = _findField(cm, fieldName);
+    field = findField();
   }
 
-  bool get reserved => fieldName == #hashCode || fieldName == #runtimeType;
-  bool get skip => field == null ? false : field.skip;
-  bool get readOnly => field == null ? false : field.readOnly;
-  bool get synthetic => accessor.isSynthetic;
-  bool get hasFieldAnnotation => field != null;
+  String get mappedName =>
+      (field == null || field.name == null) ? MirrorSystem.getName(fieldName) : field.name;
 
-  String get mappedName => field == null ? null : field.name;
   Mapper get mapper => field == null ? null : field.mapper;
 
   get setterTypeMirror => accessor.parameters.first.type;
+
+  bool get isUsedToGenerateData =>
+      accessor.isGetter && publicFieldWithAnnotation && notReserved && notSkipped;
+
+  bool get isUsedToUpdateObject =>
+      accessor.isSetter && publicFieldWithAnnotation && notReadOnly && notSkipped;
+
+
+
+  Field findField () {
+    final d = cm.declarations[fieldName];
+    if (d == null) return null;
+    return d.metadata.map((m) => m.reflectee).firstWhere((m) => m is Field, orElse: () => null);
+  }
+
+  bool get publicFieldWithAnnotation =>
+      !accessor.isPrivate && (accessor.isSynthetic || field != null);
+
+  bool get notReserved => fieldName != #hashCode && fieldName != #runtimeType;
+
+  bool get notSkipped => field == null ? true : !field.skip;
+
+  bool get notReadOnly => field == null ? true : !field.readOnly;
+}
+
+class _TypeInfo {
+  ClassMirror cm;
+  Type type;
+
+  _TypeInfo(this.cm, this.type);
+
+  _TypeInfo.fromObject(obj) {
+    type = obj.runtimeType;
+    cm = reflectClass(type);
+  }
+
+  bool get isMappable =>
+      cm.metadata.map((m) => m.reflectee).any((m) => m is Mappable);
+
+  Symbol get constructor {
+    isConstructor(m) => m is MethodMirror && m.isConstructor;
+    isSelectedConstructor(c) => c.metadata.any((m) => m.reflectee is Constructor);
+
+    final allConstructors = cm.declarations.values.where(isConstructor);
+    final rightConstructor = allConstructors.firstWhere(isSelectedConstructor, orElse: () => null);
+
+    return rightConstructor == null ? const Symbol('') : rightConstructor.constructorName;
+  }
 }
 
 class _MappableObjectToData {
@@ -50,29 +88,20 @@ class _MappableObjectToData {
   }
 
   call() {
-    return publicFields.fold({}, (Map data, _FieldInfo f) {
-      final name = mappedFieldName(f);
-      final value = im.getField(f.fieldName).reflectee;
-      data[name] = toData(f, value);
+    return getters.fold({}, (Map data, _FieldInfo f) {
+      data[f.mappedName] = toData(f);
       return data;
     });
   }
 
-  get publicFields => cm.instanceMembers.values
-      .where((m) => m.isGetter && !m.isPrivate)
-      .map((m) => new _FieldInfo.getter(cm, m))
-      .where((f) => f.synthetic || f.hasFieldAnnotation)
-      .where((f) => !f.reserved && !f.skip);
-
-  String mappedFieldName(_FieldInfo f) {
-    if (f.mappedName != null) {
-       return f.mappedName;
-    } else {
-      return MirrorSystem.getName(f.fieldName);
-    }
+  get getters {
+    return cm.instanceMembers.values
+        .map((m) => new _FieldInfo.getter(cm, m))
+        .where((f) => f.isUsedToGenerateData);
   }
 
-  toData(_FieldInfo f, value) {
+  toData(_FieldInfo f) {
+    final value = im.getField(f.fieldName).reflectee;
     if (f.mapper != null) {
       return f.mapper.toData(value);
     } else {
@@ -98,26 +127,17 @@ class _UpdateMappableObject {
   }
 
   call() {
-    publicFields.forEach((_FieldInfo f) {
-      final dataName = mappedFieldName(f);
-      if (data.containsKey(dataName)) {
-        im.setField(f.fieldName, fromData(f, data[dataName]));
+    setters.forEach((_FieldInfo f) {
+      if (data.containsKey(f.mappedName)) {
+        im.setField(f.fieldName, fromData(f, data[f.mappedName]));
       }
     });
   }
 
-  get publicFields => cm.instanceMembers.values
-      .where((m) => m.isSetter && !m.isPrivate)
-      .map((m) => new _FieldInfo.setter(cm, m))
-      .where((f) => f.synthetic || f.hasFieldAnnotation)
-      .where((f) => !f.skip && !f.readOnly);
-
-  String mappedFieldName(_FieldInfo f) {
-    if (f.mappedName != null) {
-      return f.mappedName;
-    } else {
-      return MirrorSystem.getName(f.fieldName);
-    }
+  get setters {
+    return cm.instanceMembers.values
+        .map((m) => new _FieldInfo.setter(cm, m))
+        .where((f) => f.isUsedToUpdateObject);
   }
 
   fromData(_FieldInfo f, value) {
@@ -131,6 +151,7 @@ class _UpdateMappableObject {
   }
 }
 
+
 class _ScopedMappers implements Mapper {
   Mappers _hammockMapper;
   Type _type;
@@ -142,21 +163,25 @@ class _ScopedMappers implements Mapper {
 }
 
 class Mappers {
-  final _globalMappers = {};
-  var instantiator = simpleInstantiator;
+  final Map<Type, Mapper> _globalMappers = {};
+  Instantiator instantiator = simpleInstantiator;
 
   void registerMapper(Type type, Mapper mapper) {
     _globalMappers[type] = mapper;
   }
 
+  Mapper mapperFor(Type type) =>
+      _globalMappers.containsKey(type) ?
+        _globalMappers[type] :
+        new _ScopedMappers(this, type);
+
   toData(obj) {
-    final type = obj.runtimeType;
-    listToData() => obj.map(toData).toList();
+    final t = new _TypeInfo.fromObject(obj);
 
     if (obj == null) return null;
-    if (obj is List) return listToData();
-    if (_globalMappers.containsKey(type)) return _globalMappers[type].toData(obj);
-    if (_mappable(obj.runtimeType)) return new _MappableObjectToData(this, obj)();
+    if (obj is List) return _listToData(obj);
+    if (_hasGlobalMapper(t)) return _globalMapperToData(t, obj);
+    if (t.isMappable) return new _MappableObjectToData(this, obj)();
     return obj;
   }
 
@@ -168,42 +193,35 @@ class Mappers {
     new _UpdateMappableObject(this, obj, data)();
   }
 
-  _fromData(Type type, data, ClassMirror classMirror) {
-    listToObjects() {
-      final tm = classMirror.typeArguments.first;
-      return data.map((d) => fromData(tm.reflectedType, d)).toList();
-    }
-    if (data == null) return null;
-    if (data is List) return listToObjects();
-    if (_globalMappers.containsKey(type)) return _globalMappers[type].fromData(data);
 
-    if (_mappable(type)) {
-      final obj = instantiator(type, _constructor(type), data["id"]);
-      updateMappableObject(obj, data);
-      return obj;
-    }
+
+  _fromData(Type type, data, ClassMirror classMirror) {
+    final t = new _TypeInfo(classMirror, type);
+
+    if (data == null) return null;
+    if (data is List) return _listToObjects(data, classMirror);
+    if (_hasGlobalMapper(t)) return _globalMapperFromData(t, data);
+    if (t.isMappable) return _mappableFromData(t, data);
 
     return data;
   }
 
-  Mapper mapperFor(Type type) =>
-  _globalMappers.containsKey(type) ?
-  _globalMappers[type] :
-  new _ScopedMappers(this, type);
+  _hasGlobalMapper(_TypeInfo t) => _globalMappers.containsKey(t.type);
 
-  bool _mappable(type) {
-    final cm = reflectClass(type);
-    return cm.metadata.map((m) => m.reflectee).any((m) => m is Mappable);
+  _globalMapperToData(_TypeInfo t, obj) => _globalMappers[t.type].toData(obj);
+
+  _globalMapperFromData(_TypeInfo t, data) => _globalMappers[t.type].fromData(data);
+
+  List _listToData(List obj) => obj.map(toData).toList();
+
+  List _listToObjects(List data, ClassMirror classMirror) {
+    final tm = classMirror.typeArguments.first;
+    return data.map((d) => fromData(tm.reflectedType, d)).toList();
   }
 
-  Symbol _constructor(type) {
-    isConstructor(m) => m is MethodMirror && m.isConstructor;
-    isSelectedConstructor(c) => c.metadata.any((m) => m.reflectee is Constructor);
-
-    final cm = reflectClass(type);
-    final allConstructors = cm.declarations.values.where(isConstructor);
-    final rightConstructor = allConstructors.firstWhere(isSelectedConstructor, orElse: () => null);
-
-    return rightConstructor == null ? const Symbol('') : rightConstructor.constructorName;
+  _mappableFromData(_TypeInfo t, data) {
+    final obj = instantiator(t.type, t.constructor, data["id"]);
+    updateMappableObject(obj, data);
+    return obj;
   }
 }
