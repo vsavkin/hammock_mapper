@@ -1,0 +1,10 @@
+name: hammock_mapper
+version: 0.0.1
+author: Victor Savkin <vic.savkin@gmail.com>
+homepage: https://github.com/vsavkin/hammock_mapper
+dependencies:
+  hammock: '>= 0.2.3 <0.3.0'
+dev_dependencies:
+  guinness: '>= 0.1.12'
+environment:
+  sdk: ">=1.4.0 <2.0.0"
