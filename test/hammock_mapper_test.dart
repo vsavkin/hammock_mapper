@@ -6,6 +6,7 @@ import 'package:guinness/guinness.dart';
 part 'src/data_to_object_test.dart';
 part 'src/object_to_data_test.dart';
 part 'src/scoped_by_type_test.dart';
+part 'src/hammock_adapter_test.dart';
 
 @Mappable()
 class Pet {
@@ -51,8 +52,9 @@ class IntMapper implements Mapper<int> {
 }
 const intMapper = const IntMapper();
 
-main () {;
+main () {
   testDataToObject();
   testObjectToData();
   testScopedByType();
+  testHammockAdapter();
 }
