@@ -9,6 +9,10 @@ class Constructor {
   const Constructor();
 }
 
+class ResourceId {
+  const ResourceId();
+}
+
 class Field {
   final String name;
   final bool readOnly;

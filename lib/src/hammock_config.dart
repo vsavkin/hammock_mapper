@@ -8,7 +8,7 @@ class HammockAdapter {
   HammockAdapter(this.ms, this.resourceType, this.type);
 
   Resource serialize(obj) {
-    return resource(resourceType, obj.id, ms.toData(obj));
+    return resource(resourceType, _resourceId(obj), ms.toData(obj));
   }
 
   Object deserialize(Resource res) {
@@ -18,6 +18,16 @@ class HammockAdapter {
   Object update(obj, CommandResponse resp) {
     ms.updateMappableObject(obj, resp.content);
     return obj;
+  }
+
+  _resourceId(obj) {
+    final ti = new _TypeInfo.fromObject(obj);
+    final resourceId = _default(ti.resourceId, ti.id);
+    if (resourceId == null) {
+      throw "To serialize ${obj} into a resource it must either have a field annotated with @ResourceId or the id field defined.";
+    } else {
+      return reflect(obj).getField(resourceId).reflectee;
+    }
   }
 }
 
